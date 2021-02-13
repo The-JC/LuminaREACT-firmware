@@ -18,25 +18,22 @@
 #include "stm32f4xx_ll_tim.h"
 #include "stm32f4xx_ll_gpio.h"
 
-#define CMPH 73-1
-#define CMPL 36-1
+#define CMPH 70-1
+#define CMPL 35-1
 
 #define DMA_HT 0
 #define DMA_TC 1
 
 static uint16_t tmp_buffer[BUFFER_LENGTH_PER_LED*2];
 
-#define WS2812_RESET_NONE 0
-#define WS2812_RESET_START 1
-#define WS2812_RESET_END 2
-
 static uint8_t is_updating;
 static uint8_t is_reseting;
 static uint32_t index_led;
 
+void ws2812_start_transfer(void);
 void ws2812_transfer(uint8_t flag);
 void ws2812_to_buffer(uint32_t idx, uint16_t *ptr);
-static void ws2812_start_reset(uint8_t state);
+static void ws2812_start_reset(void);
 static void ws2812_clear_flags(void);
 static void ws2812_disable_output(void);
 
@@ -52,7 +49,7 @@ static LL_TIM_OC_InitTypeDef TIM_OC_init = {
 		.OCState = LL_TIM_OCSTATE_DISABLE,
 		.OCNState = LL_TIM_OCSTATE_DISABLE,
 		.OCPolarity = LL_TIM_OCPOLARITY_HIGH,
-		.CompareValue = 36,
+		.CompareValue = 0,
 };
 
 static LL_GPIO_InitTypeDef GPIO_init = {
@@ -66,7 +63,7 @@ static LL_GPIO_InitTypeDef GPIO_init = {
 
 void ws2812_init() {
 	is_updating = 0;
-	is_reseting = WS2812_RESET_NONE;
+	is_reseting = 0;
 
 	// Enable peripheral clock
 	LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_TIM3);
@@ -84,8 +81,8 @@ void ws2812_init() {
 	LL_DMA_DisableFifoMode(DMA1, LL_DMA_STREAM_4);
 
 	LL_DMA_SetPeriphAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)&TIM3->CCR1);
-	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)buffer);
-	LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, BUFFER_SIZE);
+	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)tmp_buffer);
+	LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, BUFFER_LENGTH_PER_LED * 2);
 
 	NVIC_SetPriority(TIM3_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(), 0, 0));
 	NVIC_EnableIRQ(TIM3_IRQn);
@@ -107,7 +104,6 @@ void ws2812_init() {
 	// Init GPIO pin PA6
 	LL_GPIO_Init(GPIOA, &GPIO_init);
 
-	LL_TIM_OC_SetCompareCH1(TIM3, 56);
 	LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH1);
 	LL_TIM_EnableDMAReq_CC1(TIM3);
 
@@ -132,7 +128,8 @@ uint8_t ws2812_update() {
 	if(is_updating) return 0;
 	is_updating = 1;
 
-	ws2812_start_reset(WS2812_RESET_START);
+//	ws2812_start_reset(WS2812_RESET_START);
+	ws2812_start_transfer();
 	return 1;
 }
 
@@ -149,68 +146,65 @@ void ws2812_to_buffer(uint32_t idx, uint16_t *ptr) {
 	}
 }
 
+void ws2812_start_transfer() {
+	ws2812_to_buffer(index_led, &tmp_buffer[0]); // Load first led into buffer
+
+	index_led++;
+
+	// Set DMA to circular mode and length to 48 bytes for 2 leds
+	LL_DMA_SetMode(DMA1, LL_DMA_STREAM_4, LL_DMA_MODE_CIRCULAR);
+	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)tmp_buffer);
+	LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, BUFFER_LENGTH_PER_LED * 2);
+
+	// Clear flags, enable interupt, stream and timer output
+	ws2812_clear_flags();
+	LL_DMA_EnableIT_HT(DMA1, LL_DMA_STREAM_4);
+	LL_DMA_EnableIT_TC(DMA1, LL_DMA_STREAM_4);
+	LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_4);
+	LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH1);
+	LL_TIM_EnableCounter(TIM3);
+
+	ws2812_to_buffer(index_led, &tmp_buffer[BUFFER_LENGTH_PER_LED]); // After starting DMA transfer, load second LED
+
+}
+
 void ws2812_transfer(uint8_t flag) {
-	if(is_reseting == WS2812_RESET_END) {
+	if(is_reseting) {
 		// Disable timer output and DMA stream
 		ws2812_disable_output();
 		is_updating = 0;
-		return;
-	}
-
-	if(is_reseting == WS2812_RESET_START) {
-		if(!flag) return;
-
-		// Disable timer output and DMA stream
-//		ws2812_disable_output();
 		is_reseting = 0;
 		index_led = 0;
+		return;
 	} else {
 		// Increment led index when not in reset
 		++index_led;
 	}
 
 	if(index_led < NUMBER_OF_LEDS) {
-		if(index_led == 0 || !flag) {
+		// Load next LED into buffer
+		if(index_led == 0 || flag == DMA_HT) {
 			ws2812_to_buffer(index_led, &tmp_buffer[0]);
 		} else {
 			ws2812_to_buffer(index_led, &tmp_buffer[BUFFER_LENGTH_PER_LED]);
 		}
+	} else if((flag == DMA_HT && (NUMBER_OF_LEDS & 0x01)) || (flag == DMA_TC && !(NUMBER_OF_LEDS & 0x01))) {
+//		ws2812_disable_output();
+		LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_4);
+		LL_TIM_OC_SetCompareCH1(TIM3, 0);
 
-		if(index_led == 0) {
-			index_led++;
-
-			// Set DMA to circular mode and length to 48 bytes for 2 leds
-			LL_DMA_SetMode(DMA1, LL_DMA_STREAM_4, LL_DMA_MODE_CIRCULAR);
-			LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)tmp_buffer);
-			LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, BUFFER_LENGTH_PER_LED * 2);
-
-			// Clear flags, enable interupt, stream and timer output
-			ws2812_clear_flags();
-			LL_DMA_EnableIT_HT(DMA1, LL_DMA_STREAM_4);
-			LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_4);
-			LL_TIM_CC_EnableChannel(TIM3, LL_TIM_CHANNEL_CH1);
-
-			ws2812_to_buffer(index_led, &tmp_buffer[BUFFER_LENGTH_PER_LED]);
-		}
-	} else if((!flag && (NUMBER_OF_LEDS & 0x01)) || (flag && !(NUMBER_OF_LEDS & 0x01))) {
-		ws2812_disable_output();
-
-		ws2812_start_reset(WS2812_RESET_END);
+		ws2812_start_reset();
 	}
 }
 
-static void ws2812_start_reset(uint8_t state) {
-	is_reseting = state;
+static void ws2812_start_reset() {
+	is_reseting = 1;
 
-	memset(tmp_buffer, 0, sizeof(tmp_buffer));
-
-	if(state == WS2812_RESET_START) {
-		tmp_buffer[0] = TIM3->ARR / 2;
-	}
+	memset(tmp_buffer, 0x0, sizeof(tmp_buffer));
 
 	LL_DMA_SetMode(DMA1, LL_DMA_STREAM_4, LL_DMA_MODE_NORMAL);
 	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_4, (uint32_t)tmp_buffer);
-	LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, RESET_LEN);
+	LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_4, RESET_LEN+1);
 
 	ws2812_clear_flags();
 	LL_DMA_DisableIT_HT(DMA1, LL_DMA_STREAM_4);
@@ -237,10 +231,10 @@ void ws2812_shift(uint32_t shift) {
 }
 
 void DMA1_Stream4_IRQHandler(void) {
-	if(LL_DMA_IsActiveFlag_HT4(DMA1)) {			// Check HT(Halft Transfer) interupt
+	if(LL_DMA_IsActiveFlag_HT4(DMA1)) {			// Check HT(Half Transfer) interrupt
 		LL_DMA_ClearFlag_HT4(DMA1);
 		ws2812_transfer(DMA_HT);
-	} else if(LL_DMA_IsActiveFlag_TC4(DMA1)) {	// Check TC(Transfer complete) interupt
+	} else if(LL_DMA_IsActiveFlag_TC4(DMA1)) {	// Check TC(Transfer complete) interrupt
 		LL_DMA_ClearFlag_TC4(DMA1);
 		ws2812_transfer(DMA_TC);
 	}
@@ -252,7 +246,7 @@ static void ws2812_clear_flags(void) {
 }
 
 static void ws2812_disable_output(void) {
-	LL_TIM_CC_DisableChannel(TIM3, LL_TIM_CHANNEL_CH1);
+//	LL_TIM_CC_DisableChannel(TIM3, LL_TIM_CHANNEL_CH1);
 	LL_DMA_DisableStream(DMA1, LL_DMA_STREAM_4);
 }
 
