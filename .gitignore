@@ -1,0 +1,7 @@
+Debug/
+*.launch
+*.project
+*.scratch
+.mxproject
+
+*.o
