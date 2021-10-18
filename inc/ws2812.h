@@ -16,18 +16,14 @@
 #include "color.h"
 #include "stm32f4xx.h"
 
-#define NUMBER_OF_LEDS 30
+#define NUMBER_OF_LEDS 152
 #define BYTES_PER_LED 3
 
 #define RESET_LEN 40 //20*1.25µs = 50µs
 
-// 24bits per LED * Number of LEDs / length of buffer
 #define BUFFER_LENGTH_PER_LED (BYTES_PER_LED*8)
-#define BUFFER_SIZE_LEDS (BUFFER_LENGTH_PER_LED*NUMBER_OF_LEDS)
-#define BUFFER_SIZE (BUFFER_SIZE_LEDS + RESET_LEN)
 
 uint8_t leds[BYTES_PER_LED*NUMBER_OF_LEDS];
-uint16_t buffer[BUFFER_SIZE];
 
 void ws2812_init();
 void ws2812_set_rgb(uint32_t i, rgb_t color);

@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (C) 2019 Julian Hellner - All Rights Reserved
+ * Copyright (C) 2021 Julian Hellner - All Rights Reserved
  * 
  * The file i2c.h is part of GainAmpliefier.
  *
