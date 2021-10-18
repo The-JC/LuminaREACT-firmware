@@ -1,0 +1,10 @@
+target_sources(${elf_file}
+	PRIVATE
+		freertos.c
+		system_stm32f4xx.c
+		stm32f4xx_hal_msp.c
+		stm32f4xx_hal_timebase_tim.c
+		stm32f4xx_it.c
+		syscalls.c
+		sysmem.c
+)

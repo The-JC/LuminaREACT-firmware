@@ -1,0 +1,40 @@
+# sudo apt-get install gcc-arm-none-eabi binutils-arm-none-eabi gdb-arm-none-eabi openocd
+
+image:
+    name: julianhellner/gcc-arm-none-eabi:latest
+    
+variables:
+    GIT_SUBMODULE_STRATEGY: recursive
+
+before_script:  
+    - apt-get update -y
+
+stages:
+    - pages
+    - build
+
+build:
+    stage: build
+    script:
+        - time CLEANBUILD=true ./build.sh
+    cache:
+        key: build-cache
+        paths:
+        - build/Drivers
+        - build/Middlewares
+    artifacts:
+        paths:
+            - build/LuminaREACT.bin
+        expire_in: 1 week
+
+pages:
+    stage: pages
+    script: 
+        - apt-get install -y doxygen
+        - doxygen
+        - mv docs/html/ public/
+    artifacts:
+        paths:
+        - public
+    only:
+    - master

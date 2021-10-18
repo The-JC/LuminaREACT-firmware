@@ -13,6 +13,7 @@
 #include "ws2812.h"
 
 #include "string.h"
+#include "stm32_assert.h"
 #include "stm32f4xx_ll_bus.h"
 #include "stm32f4xx_ll_dma.h"
 #include "stm32f4xx_ll_tim.h"
@@ -24,6 +25,7 @@
 #define DMA_HT 0
 #define DMA_TC 1
 
+uint8_t ws2812_leds[BYTES_PER_LED*NUMBER_OF_LEDS];
 static uint16_t tmp_buffer[BUFFER_LENGTH_PER_LED*2];
 
 static uint8_t is_updating;
@@ -112,16 +114,16 @@ void ws2812_init() {
 }
 
 void ws2812_set_rgb(uint32_t i, rgb_t color) {
-	leds[i*BYTES_PER_LED+0] = color.R;
-	leds[i*BYTES_PER_LED+1] = color.G;
-	leds[i*BYTES_PER_LED+2] = color.B;
+	ws2812_leds[i*BYTES_PER_LED+0] = color.R;
+	ws2812_leds[i*BYTES_PER_LED+1] = color.G;
+	ws2812_leds[i*BYTES_PER_LED+2] = color.B;
 }
 void ws2812_set_hsv(uint32_t i, hsv_t color) {
 	ws2812_set_rgb(i, HSV_to_RGB(color));
 }
 
 void ws2812_clear() {
-	memset(&leds, 0, sizeof(leds));
+	memset(&ws2812_leds, 0, sizeof(ws2812_leds));
 }
 
 uint8_t ws2812_update() {
@@ -139,9 +141,9 @@ void ws2812_to_buffer(uint32_t idx, uint16_t *ptr) {
 	assert_param(idx < NUMBER_OF_LEDS);
 
 	for(i=0; i<8; i++) {
-		ptr[i + 0*8] = (leds[idx * BYTES_PER_LED + 1] & (1 << (7-i))) ? CMPH : CMPL; // GREEN
-		ptr[i + 1*8] = (leds[idx * BYTES_PER_LED + 0] & (1 << (7-i))) ? CMPH : CMPL; // RED
-		ptr[i + 2*8] = (leds[idx * BYTES_PER_LED + 2] & (1 << (7-i))) ? CMPH : CMPL; // BLUE
+		ptr[i + 0*8] = (ws2812_leds[idx * BYTES_PER_LED + 1] & (1 << (7-i))) ? CMPH : CMPL; // GREEN
+		ptr[i + 1*8] = (ws2812_leds[idx * BYTES_PER_LED + 0] & (1 << (7-i))) ? CMPH : CMPL; // RED
+		ptr[i + 2*8] = (ws2812_leds[idx * BYTES_PER_LED + 2] & (1 << (7-i))) ? CMPH : CMPL; // BLUE
 
 	}
 }
@@ -219,13 +221,13 @@ void ws2812_shift(uint32_t shift) {
 	uint32_t i;
 	for(i=NUMBER_OF_LEDS; i > 0; i--) {
 		if(i>shift*BYTES_PER_LED) {
-			leds[i*BYTES_PER_LED + 0 - 1] = leds[i*BYTES_PER_LED + 0 - 1 - shift*BYTES_PER_LED];
-			leds[i*BYTES_PER_LED + 1 - 1] = leds[i*BYTES_PER_LED + 1 - 1 - shift*BYTES_PER_LED];
-			leds[i*BYTES_PER_LED + 2 - 1] = leds[i*BYTES_PER_LED + 2 - 1 - shift*BYTES_PER_LED];
+			ws2812_leds[i*BYTES_PER_LED + 0 - 1] = ws2812_leds[i*BYTES_PER_LED + 0 - 1 - shift*BYTES_PER_LED];
+			ws2812_leds[i*BYTES_PER_LED + 1 - 1] = ws2812_leds[i*BYTES_PER_LED + 1 - 1 - shift*BYTES_PER_LED];
+			ws2812_leds[i*BYTES_PER_LED + 2 - 1] = ws2812_leds[i*BYTES_PER_LED + 2 - 1 - shift*BYTES_PER_LED];
 		} else {
-			leds[i*BYTES_PER_LED + 0 - 1] = 0;
-			leds[i*BYTES_PER_LED + 1 - 1] = 0;
-			leds[i*BYTES_PER_LED + 2 - 1] = 0;
+			ws2812_leds[i*BYTES_PER_LED + 0 - 1] = 0;
+			ws2812_leds[i*BYTES_PER_LED + 1 - 1] = 0;
+			ws2812_leds[i*BYTES_PER_LED + 2 - 1] = 0;
 		}
 	}
 }

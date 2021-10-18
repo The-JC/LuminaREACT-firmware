@@ -23,7 +23,7 @@
 
 #define BUFFER_LENGTH_PER_LED (BYTES_PER_LED*8)
 
-uint8_t leds[BYTES_PER_LED*NUMBER_OF_LEDS];
+extern uint8_t ws2812_leds[BYTES_PER_LED*NUMBER_OF_LEDS];
 
 void ws2812_init();
 void ws2812_set_rgb(uint32_t i, rgb_t color);
@@ -34,4 +34,4 @@ void ws2812_shift(uint32_t shift);
 
 void DMA1_Stream4_IRQHandler(void);
 
-#endif /* INC_WS2812_H_ */
+#endif /* _WS2812_H_ */

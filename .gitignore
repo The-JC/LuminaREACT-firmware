@@ -1,4 +1,7 @@
 Debug/
+build/
+CMakeFiles/
+docs/
 *.launch
 *.project
 *.scratch
