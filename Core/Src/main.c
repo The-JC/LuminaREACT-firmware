@@ -21,7 +21,10 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "arm_math.h"
+#include "arm_const_structs.h"
 #include "cat5171.h"
+#include "test_signal.h"
 
 /* USER CODE END Includes */
 
@@ -33,7 +36,17 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define ADC_BUF_LEN 4096*2
+//#define TRANSMIT_UART
+#define TRANSMIT_FFT
+
+#define FLOAT_FFT
+
+//#define TEST_SIGNAL
+
+#define FFT_SIZE 4096
+#define ADC_BUF_LEN FFT_SIZE*2
+
+#define START_BYTE 0xFEFEFEFE
 
 /* USER CODE END PD */
 
@@ -52,7 +65,28 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_buf[ADC_BUF_LEN];
+int16_t adc_buf[ADC_BUF_LEN];
+#ifndef FLOAT_FFT
+q15_t fft_work_buf[FFT_SIZE];
+q15_t fft_buf[FFT_SIZE];
+arm_rfft_instance_q15 fft;
+uint16_t tx_data[FFT_SIZE*2+1];
+#else
+float32_t fft_buf_in[FFT_SIZE];
+float32_t fft_buf_out[FFT_SIZE];
+arm_rfft_fast_instance_f32 fft;
+uint32_t tx_data[FFT_SIZE+1];
+#endif
+
+
+arm_status fft_status;
+uint8_t transmitting = 0;
+uint8_t state = 0; //0 -no fft ir, 1- first half, 2- second half
+uint32_t counter_fft = 0;
+
+uint8_t UART2_rxBuffer[1] = {0};
+
+uint8_t setWiper = 50;
 
 /* USER CODE END PV */
 
@@ -64,6 +98,8 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
+
+void performFFT(void);
 
 /* USER CODE END PFP */
 
@@ -105,10 +141,23 @@ int main(void)
   MX_ADC1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  CAT5171_Init();
-  CAT5171_SetWiper(100);
 
+  // Init real FFT
+#ifndef FLOAT_FFT
+  arm_status status = ARM_MATH_SUCCESS;
+  status = arm_rfft_init_q15(&fft, FFT_SIZE, 0, 0);
+#else
+  arm_rfft_fast_init_f32 (&fft, FFT_SIZE);
+#endif
+
+  // Init programmable Potentiometer
+  CAT5171_Init();
+  CAT5171_SetWiper(setWiper);
+
+  // Start ADC to Memory DMA
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buf, ADC_BUF_LEN);
+
+  HAL_UART_Receive_IT(&huart2, UART2_rxBuffer, 1);
 
   /* USER CODE END 2 */
 
@@ -116,6 +165,9 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  HAL_Delay(500);
+	  HAL_GPIO_TogglePin(LD_User_GPIO_Port, LD_User_Pin);
+	  CAT5171_SetWiper(setWiper);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -146,18 +198,11 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 176;
+  RCC_OscInitStruct.PLL.PLLN = 160;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 2;
   RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Activate the Over-Drive mode
-  */
-  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
   {
     Error_Handler();
   }
@@ -198,7 +243,7 @@ static void MX_ADC1_Init(void)
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV8;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
   hadc1.Init.ContinuousConvMode = ENABLE;
@@ -218,7 +263,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  sConfig.SamplingTime = ADC_SAMPLETIME_112CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -279,7 +324,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 460800;
+  huart2.Init.BaudRate = 921600 ;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -334,6 +379,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, LD_User_Pin|LD_Sig_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
@@ -347,6 +395,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : LD_User_Pin LD_Sig_Pin */
+  GPIO_InitStruct.Pin = LD_User_Pin|LD_Sig_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
 }
 
 /* USER CODE BEGIN 4 */
@@ -355,27 +410,123 @@ static void MX_GPIO_Init(void)
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
 	//HAL_DMA_Start(&hdma_usart2_tx, (uint32_t*)&adc_buf[0], (uint32_t)&huart2.Instance->DR, ADC_BUF_LEN/2);
 
-	uint16_t len = 255;
-	uint8_t data[2*len];
-	for(uint8_t i=0; i< len; i++) {
-		data[2*i] = (uint8_t)adc_buf[i];
-		data[2*i+1] = (uint8_t)(adc_buf[i] >> 8);
-	}
-	HAL_UART_Transmit(&huart2, data, len*2, 100);
+#ifdef TRANSMIT_UART
+	memcpy(tx_data, adc_buf, sizeof(adc_buf)/2);
+	tx_data[FFT_SIZE] = 0x0800;
+	HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&tx_data, sizeof(tx_data));
+	return;
+#endif /* TRANSMIT_UART */
+	if(state == 0) {
+		state = 1;
+		counter_fft++;
 
+#ifdef TEST_SIGNAL
+		memcpy(adc_buf, test_signal, sizeof(test_signal));
+#endif /* TEST_SIGNAL */
+
+#ifndef FLOAT_FFT
+		memcpy(fft_work_buf, adc_buf, FFT_SIZE);
+		arm_shift_q15(fft_work_buf, 3, fft_work_buf, FFT_SIZE);
+
+		fft_status = ARM_MATH_SUCCESS;
+		fft_status = arm_rfft_init_q15(&fft, FFT_SIZE, 0, 0);
+		// perform FFT on first half of the input buffer
+		arm_rfft_q15(&fft, fft_work_buf, fft_buf);
+#else
+		for(uint16_t i=0; i< FFT_SIZE; i++) {
+			fft_buf_in[i] = ((float) adc_buf[i])-2048;
+		}
+
+		arm_rfft_fast_f32(&fft, fft_buf_in, fft_buf_out, 0);
+#endif /* FLOAT FFT */
+
+#ifdef TRANSMIT_FFT
+		if(!transmitting) {
+			transmitting=1;
+#ifndef FLOAT_FFT
+			memcpy(tx_data+1, fft_buf, sizeof(fft_buf));
+//			arm_shift_q15(fft_buf, 11, fft_buf, FFT_SIZE);
+			arm_cmplx_mag_q15(fft_buf, tx_data+1, FFT_SIZE);
+#else
+			arm_cmplx_mag_f32(fft_buf_out, (float32_t*) tx_data+1, FFT_SIZE);
+
+#endif /* FLOAT_FFT */
+			tx_data[0] = START_BYTE;
+//			tx_data[1] = 0x40b00000;
+//			tx_data[2] = 0x41280000;
+			HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&tx_data, sizeof(float32_t)*(FFT_SIZE/2+1));
+		}
+#endif /* TRANSMIT_FFT */
+		state = 0;
+	}
 }
 
 // Called when buffer is completly filled
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 	//HAL_DMA_Start(&hdma_usart2_tx, (uint32_t*)&adc_buf[ADC_BUF_LEN/2], (uint32_t)&huart2.Instance->DR, ADC_BUF_LEN/2);
 
-	uint16_t len = 255;
-	uint8_t data[2*len];
-		for(uint8_t i=0; i< len; i++) {
-			data[2*i] = (uint8_t)adc_buf[ADC_BUF_LEN/2+i];
-			data[2*i+1] = (uint8_t)(adc_buf[ADC_BUF_LEN/2+i] >> 8);
+#ifdef TRANSMIT_UART
+	memcpy(tx_data, adc_buf + ADC_BUF_LEN/2, sizeof(adc_buf)/2);
+	tx_data[FFT_SIZE] = 0xFFFF;
+	HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&tx_data, sizeof(tx_data));
+	return;
+#endif /* TRANSMIT_UART */
+
+	if(state == 0) {
+		state = 2;
+		counter_fft++;
+
+#ifdef TEST_SIGNAL
+		memcpy(adc_buf +ADC_BUF_LEN/2, test_signal, sizeof(test_signal));
+#endif /* TEST_SIGNAL */
+
+#ifndef FLOAT_FFT
+		arm_shift_q15(adc_buf +ADC_BUF_LEN/2, 3, fft_work_buf, FFT_SIZE);
+
+		fft_status = ARM_MATH_SUCCESS;
+		fft_status = arm_rfft_init_q15(&fft, FFT_SIZE, 0, 0);
+		// perform FFT on second half of the input buffer
+		arm_rfft_q15(&fft, fft_work_buf +ADC_BUF_LEN/2, fft_buf);
+#else
+		for(uint16_t i=0; i< FFT_SIZE; i++) {
+			fft_buf_in[i] = ((float) adc_buf[i+FFT_SIZE])-2048;
 		}
-		HAL_UART_Transmit(&huart2, data, len*2, 100);
+
+		arm_rfft_fast_f32 (&fft, fft_buf_in, fft_buf_out, 0);
+#endif /* FLOAT FFT */
+
+#ifdef TRANSMIT_FFT
+		if(!transmitting) {
+			transmitting=1;
+#ifndef FLOAT_FFT
+			memcpy(tx_data+1, fft_buf, sizeof(fft_buf));
+//			arm_shift_q15(fft_buf, 11, fft_buf, FFT_SIZE);
+			arm_cmplx_mag_q15(fft_buf, tx_data+1, FFT_SIZE);
+#else
+			arm_cmplx_mag_f32(fft_buf_out, (float32_t*) tx_data+1, FFT_SIZE);
+
+#endif /* FLOAT_FFT */
+			tx_data[0] = START_BYTE;
+//			tx_data[1] = 0x40b00000;
+//			tx_data[2] = 0x41280000;
+			HAL_UART_Transmit_DMA(&huart2, (uint8_t *)&tx_data, sizeof(float32_t)*(FFT_SIZE/2+1));
+		}
+#endif /* TRANSMIT_FFT */
+		state = 0;
+	}
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
+	transmitting=0;
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+//	CAT5171_SetWiper(UART2_rxBuffer[0]);
+//	HAL_UART_Receive_IT(&huart2, UART2_rxBuffer, 1);
+}
+
+void performFFT(void) {
+
 }
 
 /* USER CODE END 4 */
