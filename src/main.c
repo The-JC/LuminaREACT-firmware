@@ -12,11 +12,10 @@
 
 #include "ws2812.h"
 #include "color.h"
+#include "drivers/cat5171.h"
 
 // Private variables
 ADC_HandleTypeDef hadc1;
-
-I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart2;
@@ -58,6 +57,8 @@ int main(void) {
 
 	ws2812_init();
 	ws2812_update();
+
+	CAT5171_Init();
 
 	// Init scheduler
 	osKernelInitialize();
@@ -136,13 +137,13 @@ static void MX_ADC1_Init(void) {
 	hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
 	hadc1.Init.Resolution = ADC_RESOLUTION_12B;
 	hadc1.Init.ScanConvMode = DISABLE;
-	hadc1.Init.ContinuousConvMode = DISABLE;
+	hadc1.Init.ContinuousConvMode = ENABLE;
 	hadc1.Init.DiscontinuousConvMode = DISABLE;
 	hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
 	hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
 	hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
 	hadc1.Init.NbrOfConversion = 1;
-	hadc1.Init.DMAContinuousRequests = DISABLE;
+	hadc1.Init.DMAContinuousRequests = ENABLE;
 	hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
 
 	if (HAL_ADC_Init(&hadc1) != HAL_OK) {
