@@ -1,0 +1,10 @@
+Debug/
+build/*
+CMakeFiles/
+docs/
+*.launch
+*.project
+*.scratch
+.mxproject
+
+*.o
