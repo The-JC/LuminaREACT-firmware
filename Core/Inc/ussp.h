@@ -16,6 +16,9 @@
 #define ESCAPE_BYTE		0x7D
 
 #define MAX_PAYLOAD_SIZE 255
+// START_BYTE LENGTH PAYLOAD_TYPE CHECKSUM END_BYTE
+#define USSP_PACKAGE_OVERHEAD 5
+#define MAX_PACKAGE_SIZE USSP_PACKAGE_OVERHEAD + MAX_PAYLOAD_SIZE
 
 // Define a union to simplify access to payload data
 typedef union {
@@ -40,8 +43,15 @@ typedef enum {
 	usspErrorQueueFull		= 3, 	///<
 	usspErrorInvalidArg		= 4,
 	usspErrorBufferToSmall	= 5,
+	usspErrorInvalidPacket	= 6,
+	usspErroInvalidCRC		= 7,
 
 } ussp_status_t;
+
+typedef enum {
+	ussp_type_invalid		= 0,
+	ussp_type_message		= 0x80,
+} ussp_payload_type_t;
 
 void sendTask(void *argument);
 

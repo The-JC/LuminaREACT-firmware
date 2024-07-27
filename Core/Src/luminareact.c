@@ -23,10 +23,12 @@ volatile int16_t inputRmsAmplitude;
 void initializeFFT(arm_rfft_fast_instance_f32 *fft_instance);
 
 void controlTask(void *argument) {
-  for(;;)
-  {
-    osDelay(1);
-  }
+	uint8_t i = 0;
+	while(1){
+		const char *str = "Hello world %d\n";
+		usspSendSMessage(0, str,i++);
+		osDelay(500);
+	}
 }
 
 void runADCCallback(void *argument) {
@@ -72,7 +74,7 @@ void fftTask(void *argument) {
         		osSemaphoreRelease(xFftBufferSemaphoreHandle);
         	}
 
-
+        	osDelay(1);
         }
     }
 }
@@ -80,7 +82,7 @@ void fftTask(void *argument) {
 void ledTask(void *argument) {
   for(;;)
   {
-    osDelay(1);
+    osDelay(10);
   }
 }
 

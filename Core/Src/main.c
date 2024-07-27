@@ -57,6 +57,7 @@ TIM_HandleTypeDef htim7;
 UART_HandleTypeDef huart4;
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_tx;
+DMA_HandleTypeDef hdma_usart2_rx;
 
 /* Definitions for xLedTask */
 osThreadId_t xLedTaskHandle;
@@ -72,17 +73,17 @@ const osThreadAttr_t xFftTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
-/* Definitions for xControlTask */
-osThreadId_t xControlTaskHandle;
-const osThreadAttr_t xControlTask_attributes = {
-  .name = "xControlTask",
+/* Definitions for xCtrlTask */
+osThreadId_t xCtrlTaskHandle;
+const osThreadAttr_t xCtrlTask_attributes = {
+  .name = "xCtrlTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityBelowNormal,
 };
-/* Definitions for xSendTask */
-osThreadId_t xSendTaskHandle;
-const osThreadAttr_t xSendTask_attributes = {
-  .name = "xSendTask",
+/* Definitions for xTxTask */
+osThreadId_t xTxTaskHandle;
+const osThreadAttr_t xTxTask_attributes = {
+  .name = "xTxTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityLow,
 };
@@ -90,6 +91,11 @@ const osThreadAttr_t xSendTask_attributes = {
 osMessageQueueId_t xUartSendQueueHandle;
 const osMessageQueueAttr_t xUartSendQueue_attributes = {
   .name = "xUartSendQueue"
+};
+/* Definitions for xUartReceiveQueue */
+osMessageQueueId_t xUartReceiveQueueHandle;
+const osMessageQueueAttr_t xUartReceiveQueue_attributes = {
+  .name = "xUartReceiveQueue"
 };
 /* Definitions for xAdcTimer */
 osTimerId_t xAdcTimerHandle;
@@ -138,6 +144,7 @@ const osEventFlagsAttr_t fftNewData_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_UART4_Init(void);
@@ -189,6 +196,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_UART4_Init();
@@ -242,6 +250,9 @@ int main(void)
   /* creation of xUartSendQueue */
   xUartSendQueueHandle = osMessageQueueNew (4, sizeof(ussp_packet), &xUartSendQueue_attributes);
 
+  /* creation of xUartReceiveQueue */
+  xUartReceiveQueueHandle = osMessageQueueNew (4, sizeof(ussp_packet), &xUartReceiveQueue_attributes);
+
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -253,11 +264,11 @@ int main(void)
   /* creation of xFftTask */
   xFftTaskHandle = osThreadNew(fftTask, NULL, &xFftTask_attributes);
 
-  /* creation of xControlTask */
-  xControlTaskHandle = osThreadNew(controlTask, NULL, &xControlTask_attributes);
+  /* creation of xCtrlTask */
+  xCtrlTaskHandle = osThreadNew(controlTask, NULL, &xCtrlTask_attributes);
 
-  /* creation of xSendTask */
-  xSendTaskHandle = osThreadNew(sendTask, NULL, &xSendTask_attributes);
+  /* creation of xTxTask */
+  xTxTaskHandle = osThreadNew(sendTask, NULL, &xTxTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -603,6 +614,30 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* Init with LL driver */
+  /* DMA controller clock enable */
+  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA2);
+  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_DMA1);
+
+  /* DMA interrupt init */
+  /* DMA1_Stream5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 9, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 10, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
 
