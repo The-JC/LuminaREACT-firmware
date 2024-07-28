@@ -19,10 +19,23 @@ uint8_t receive_buffer[USSP_RX_BUFFER_SIZE];
 
 osMemoryPoolId_t packet_MemPool;
 
+/**
+ * \brief           Calculate length of statically allocated array
+ */
+#define ARRAY_LEN(x)            (sizeof(x) / sizeof((x)[0]))
+
+/**
+ * \brief           USART RX buffer for DMA to transfer every received byte
+ * \note            Contains raw data that are about to be processed by different events
+ */
+uint8_t usart_rx_dma_buffer[64];
+
 /* Private function prototypes -----------------------------------------------*/
 uint8_t usspCalculateCRC(ussp_payload *data, uint8_t length);
 ussp_status_t usspEncodePayload(const ussp_packet *pkt, uint8_t *encodedData, uint16_t *encodedLength);
 ussp_status_t usspDecodePayload(const uint8_t *encodedData, uint16_t encodedLength, ussp_packet *pkt);
+uint8_t usart_start_tx_dma_transfer(const uint8_t *data, uint16_t len);
+void usart_process_data(const void* data, size_t len);
 
 ussp_status_t usspSendSMessage(uint32_t timeout, const char *format, ...) {
 	va_list args;
@@ -95,8 +108,7 @@ void sendTask(void *argument) {
 					break;
 
 				// Start the DMA transfer
-//				HAL_UART_Transmit(&huart2, buffer, encodedLength, osWaitForever);
-				HAL_UART_Transmit_DMA(&huart2, send_buffer, encodedLength);
+				usart_start_tx_dma_transfer(send_buffer, encodedLength);
 
 				// Wait for the notification that the transmission is complete
 //				osThreadFlagsWait(0x01, osFlagsWaitAny, osWaitForever);
@@ -123,36 +135,6 @@ void sendTask(void *argument) {
 
 	}
 }
-
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == USART2) {
-        // Notify the task that transmission is complete
-//        osThreadFlagsSet(xTxTaskHandle, 0x01);
-        osSemaphoreRelease(xUARTHandle);
-    }
-}
-
-void HAL_DMA_TxCpltCallback(DMA_HandleTypeDef *hdma) {
-    if (hdma->Instance == DMA1_Stream6) {
-        // Notify the task that DMA transmission is complete
-//        osThreadFlagsSet(xTxTaskHandle, 0x01);
-        osSemaphoreRelease(xUARTHandle);
-    }
-}
-
-void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance == USART2) {
-		osThreadFlagsSet(xTxTaskHandle, 0x01);
-	}
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-	if (huart->Instance == USART2) {
-		osThreadFlagsSet(xTxTaskHandle, 0x02);
-	}
-}
-
-
 
 ussp_status_t usspEncodePayload(const ussp_packet *pkt, uint8_t *encodedData, uint16_t *encodedLength) {
 	if (pkt == NULL || encodedData == NULL || encodedLength == NULL) {
@@ -293,3 +275,206 @@ uint8_t usspCalculateCRC(ussp_payload *data, uint8_t length) {
 	uint32_t crc32 = HAL_CRC_Accumulate(&hcrc, (uint32_t*)data, (length+1 + 4-1)/4);
 	return (crc32 & 0xFF);
 }
+
+/**
+ * \brief           Check for new data received with DMA
+ *
+ * User must select context to call this function from:
+ * - Only interrupts (DMA HT, DMA TC, UART IDLE) with same preemption priority level
+ * - Only thread context (outside interrupts)
+ *
+ * If called from both context-es, exclusive access protection must be implemented
+ * This mode is not advised as it usually means architecture design problems
+ *
+ * When IDLE interrupt is not present, application must rely only on thread context,
+ * by manually calling function as quickly as possible, to make sure
+ * data are read from raw buffer and processed.
+ *
+ * Not doing reads fast enough may cause DMA to overflow unread received bytes,
+ * hence application will lost useful data.
+ *
+ * Solutions to this are:
+ * - Improve architecture design to achieve faster reads
+ * - Increase raw buffer size and allow DMA to write more data before this function is called
+ */
+void usart_rx_check(void) {
+    static size_t old_pos;
+    size_t pos;
+
+    /* Calculate current position in buffer and check for new data available */
+    pos = ARRAY_LEN(usart_rx_dma_buffer) - LL_DMA_GetDataLength(DMA1, LL_DMA_STREAM_5);
+    if (pos != old_pos) {                       /* Check change in received data */
+        if (pos > old_pos) {                    /* Current position is over previous one */
+            /*
+             * Processing is done in "linear" mode.
+             *
+             * Application processing is fast with single data block,
+             * length is simply calculated by subtracting pointers
+             *
+             * [   0   ]
+             * [   1   ] <- old_pos |------------------------------------|
+             * [   2   ]            |                                    |
+             * [   3   ]            | Single block (len = pos - old_pos) |
+             * [   4   ]            |                                    |
+             * [   5   ]            |------------------------------------|
+             * [   6   ] <- pos
+             * [   7   ]
+             * [ N - 1 ]
+             */
+            usart_process_data(&usart_rx_dma_buffer[old_pos], pos - old_pos);
+        } else {
+            /*
+             * Processing is done in "overflow" mode..
+             *
+             * Application must process data twice,
+             * since there are 2 linear memory blocks to handle
+             *
+             * [   0   ]            |---------------------------------|
+             * [   1   ]            | Second block (len = pos)        |
+             * [   2   ]            |---------------------------------|
+             * [   3   ] <- pos
+             * [   4   ] <- old_pos |---------------------------------|
+             * [   5   ]            |                                 |
+             * [   6   ]            | First block (len = N - old_pos) |
+             * [   7   ]            |                                 |
+             * [ N - 1 ]            |---------------------------------|
+             */
+            usart_process_data(&usart_rx_dma_buffer[old_pos], ARRAY_LEN(usart_rx_dma_buffer) - old_pos);
+            if (pos > 0) {
+                usart_process_data(&usart_rx_dma_buffer[0], pos);
+            }
+        }
+        old_pos = pos;                          /* Save current position as old for next transfers */
+    }
+}
+
+/**
+ * \brief           Process received data over UART
+ * \note            Either process them directly or copy to other bigger buffer
+ * \param[in]       data: Data to process
+ * \param[in]       len: Length in units of bytes
+ */
+void usart_process_data(const void* data, size_t len) {
+    const uint8_t* d = data;
+
+    /*
+     * This function is called on DMA TC or HT events, and on UART IDLE (if enabled) event.
+     *
+     * For the sake of this example, function does a loop-back data over UART in polling mode.
+     * Check ringbuff RX-based example for implementation with TX & RX DMA transfer.
+     */
+
+    for (; len > 0; --len, ++d) {
+        LL_USART_TransmitData8(USART2, *d);
+        while (!LL_USART_IsActiveFlag_TXE(USART2)) {}
+    }
+    while (!LL_USART_IsActiveFlag_TC(USART2)) {}
+}
+
+/**
+ * \brief           Checks for data in buffer and starts transfer if not in progress
+ */
+uint8_t usart_start_tx_dma_transfer(const uint8_t *data, uint16_t len) {
+    uint32_t primask;
+//    uint8_t started = 0;
+
+    /*
+     * First check if transfer is currently in-active,
+     * by examining the value of usart_tx_dma_current_len variable.
+     *
+     * This variable is set before DMA transfer is started and cleared in DMA TX complete interrupt.
+     *
+     * It is not necessary to disable the interrupts before checking the variable:
+     *
+     * When usart_tx_dma_current_len == 0
+     *    - This function is called by either application or TX DMA interrupt
+     *    - When called from interrupt, it was just reset before the call,
+     *         indicating transfer just completed and ready for more
+     *    - When called from an application, transfer was previously already in-active
+     *         and immediate call from interrupt cannot happen at this moment
+     *
+     * When usart_tx_dma_current_len != 0
+     *    - This function is called only by an application.
+     *    - It will never be called from interrupt with usart_tx_dma_current_len != 0 condition
+     *
+     * Disabling interrupts before checking for next transfer is advised
+     * only if multiple operating system threads can access to this function w/o
+     * exclusive access protection (mutex) configured,
+     * or if application calls this function from multiple interrupts.
+     *
+     * This example assumes worst use case scenario,
+     * hence interrupts are disabled prior every check
+     */
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    /* Configure DMA */
+	LL_DMA_SetDataLength(DMA1, LL_DMA_STREAM_6, len);
+	LL_DMA_SetMemoryAddress(DMA1, LL_DMA_STREAM_6, (uint32_t)data);
+
+	/* Clear all flags */
+	LL_DMA_ClearFlag_TC3(DMA1);
+	LL_DMA_ClearFlag_HT3(DMA1);
+	LL_DMA_ClearFlag_DME3(DMA1);
+	LL_DMA_ClearFlag_FE3(DMA1);
+	LL_DMA_ClearFlag_TE3(DMA1);
+
+	/* Start transfer */
+	LL_DMA_EnableStream(DMA1, LL_DMA_STREAM_6);
+
+    __set_PRIMASK(primask);
+//    __enable_irq();
+    return usspOK;
+}
+
+/**
+ * \brief           DMA1 stream5 interrupt handler for USART2 RX
+ */
+void DMA1_Stream5_IRQHandler(void) {
+    void* d = (void *)1;
+
+    /* Check half-transfer complete interrupt */
+    if (LL_DMA_IsEnabledIT_HT(DMA1, LL_DMA_STREAM_5) && LL_DMA_IsActiveFlag_HT5(DMA1)) {
+        LL_DMA_ClearFlag_HT5(DMA1);             /* Clear half-transfer complete flag */
+        osMessageQueuePut(xUartReceiveQueueHandle, &d, 0, 0); /* Write data to queue. Do not use wait function! */
+    }
+
+    /* Check transfer-complete interrupt */
+    if (LL_DMA_IsEnabledIT_TC(DMA1, LL_DMA_STREAM_5) && LL_DMA_IsActiveFlag_TC5(DMA1)) {
+        LL_DMA_ClearFlag_TC5(DMA1);             /* Clear transfer complete flag */
+        osMessageQueuePut(xUartReceiveQueueHandle, &d, 0, 0); /* Write data to queue. Do not use wait function! */
+    }
+
+    /* Implement other events when needed */
+}
+
+/**
+ * \brief           DMA1 stream6 interrupt handler for USART2 TX
+ */
+void DMA1_Stream6_IRQHandler(void) {
+    /* Check transfer-complete interrupt */
+    if (LL_DMA_IsEnabledIT_TC(DMA1, LL_DMA_STREAM_6) && LL_DMA_IsActiveFlag_TC6(DMA1)) {
+        LL_DMA_ClearFlag_TC6(DMA1);             /* Clear transfer complete flag */
+        osSemaphoreRelease(xUARTHandle);
+    }
+
+    /* Implement other events when needed */
+}
+
+/**
+ * \brief           USART2 global interrupt handler
+ */
+void USART2_IRQHandler(void) {
+    void* d = (void *)1;
+
+    /* Check for IDLE line interrupt */
+    if (LL_USART_IsEnabledIT_IDLE(USART2) && LL_USART_IsActiveFlag_IDLE(USART2)) {
+        LL_USART_ClearFlag_IDLE(USART2);        /* Clear IDLE line flag */
+        osMessageQueuePut(xUartReceiveQueueHandle, &d, 0, 0); /* Write data to queue. Do not use wait function! */
+    }
+
+    /* Implement other events when needed */
+}
+
+
+
