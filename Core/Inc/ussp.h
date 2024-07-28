@@ -20,6 +20,9 @@
 #define USSP_PACKAGE_OVERHEAD 5
 #define MAX_PACKAGE_SIZE USSP_PACKAGE_OVERHEAD + MAX_PAYLOAD_SIZE
 
+#define USSP_RX_BUFFER_SIZE MAX_PACKAGE_SIZE*4
+#define USSP_TX_MEMPOOL 2
+
 // Define a union to simplify access to payload data
 typedef union {
 	struct {

@@ -12,8 +12,12 @@ extern CRC_HandleTypeDef hcrc;
 extern osThreadId_t xTxTaskHandle;
 extern UART_HandleTypeDef huart2;
 
+//ussp_packet tmp_packet;
 ussp_packet send_packet;
 uint8_t send_buffer[MAX_PACKAGE_SIZE];
+uint8_t receive_buffer[USSP_RX_BUFFER_SIZE];
+
+osMemoryPoolId_t packet_MemPool;
 
 /* Private function prototypes -----------------------------------------------*/
 uint8_t usspCalculateCRC(ussp_payload *data, uint8_t length);
@@ -22,14 +26,19 @@ ussp_status_t usspDecodePayload(const uint8_t *encodedData, uint16_t encodedLeng
 
 ussp_status_t usspSendSMessage(uint32_t timeout, const char *format, ...) {
 	va_list args;
-	ussp_packet pkt = {0};
+	ussp_packet *pkt;
 	va_start(args, format);
 	uint16_t length;
 
-	pkt.payload.payloadType = ussp_type_message;
+	pkt = osMemoryPoolAlloc(packet_MemPool, 0);
+	if(pkt == 0) {
+		return usspError;
+	}
+
+	pkt->payload.payloadType = ussp_type_message;
 
 	// Format the string
-	length = vsnprintf((char *)&pkt.payload.payloadData, MAX_PAYLOAD_SIZE, format, args);
+	length = vsnprintf((char *)pkt->payload.payloadData, MAX_PAYLOAD_SIZE, format, args);
 
 	va_end(args);
 
@@ -40,13 +49,23 @@ ussp_status_t usspSendSMessage(uint32_t timeout, const char *format, ...) {
 		return usspErrorSizeExceeded;
 	}
 
-	pkt.length = length;
+	pkt->length = length;
 
 	 // Send the formatted string to the queue
-	if (osMessageQueuePut(xUartSendQueueHandle, &pkt, 0, timeout) != osOK) {
+	if (osMessageQueuePut(xUartSendQueueHandle, pkt, 0, timeout) != osOK) {
 		// Handle error if the queue is full
 //		printf("Queue is full! Failed to send message.\n");
+
+		// Release memory before returning
+		if(osMemoryPoolFree(packet_MemPool, pkt) != osOK) {
+				return usspError;
+		}
 		return usspErrorQueueFull;
+	}
+
+	// Release memory before returning
+	if(osMemoryPoolFree(tx_MemPool, pkt) != osOK) {
+		return usspError;
 	}
 
 	return usspOK;
@@ -54,6 +73,12 @@ ussp_status_t usspSendSMessage(uint32_t timeout, const char *format, ...) {
 
 void sendTask(void *argument) {
 	uint16_t encodedLength;
+	uint8_t rxBufferSection;
+	uint8_t *rxBufferPtr;
+
+	HAL_UART_Receive_DMA(&huart2, receive_buffer, USSP_RX_BUFFER_SIZE);
+
+	tx_MemPool = osMemoryPoolNew(USSP_TX_MEMPOOL, sizeof(ussp_packet), NULL);
 
 	while(1) {
 
@@ -74,10 +99,23 @@ void sendTask(void *argument) {
 				HAL_UART_Transmit_DMA(&huart2, send_buffer, encodedLength);
 
 				// Wait for the notification that the transmission is complete
-				osThreadFlagsWait(0x01, osFlagsWaitAny, osWaitForever);
-
-				osSemaphoreRelease(xUARTHandle);
+//				osThreadFlagsWait(0x01, osFlagsWaitAny, osWaitForever);
+//
+				// Semaphore is released from Interrupt to make thread non blocking
+//				osSemaphoreRelease(xUARTHandle);
 			}
+		}
+
+		// Handle received packets
+		if(rxBufferSection = osThreadFlagsGet() > 0) {
+			if(rxBufferSection == 1) {
+				// The first half of the RX has been read so we can read it now
+				rxBufferSection = receive_buffer;
+			} else if(rxBufferSection == 2) {
+				rxBufferSection = receive_buffer + USSP_RX_BUFFER_SIZE/2;
+			}
+
+			// Decode
 		}
 
 		osDelay(10);
@@ -87,19 +125,31 @@ void sendTask(void *argument) {
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
-//	osSemaphoreRelease(xUARTHandle);
     if (huart->Instance == USART2) {
         // Notify the task that transmission is complete
-        osThreadFlagsSet(xTxTaskHandle, 0x01);
+//        osThreadFlagsSet(xTxTaskHandle, 0x01);
+        osSemaphoreRelease(xUARTHandle);
     }
 }
 
 void HAL_DMA_TxCpltCallback(DMA_HandleTypeDef *hdma) {
-//	osSemaphoreRelease(xUARTHandle);
     if (hdma->Instance == DMA1_Stream6) {
         // Notify the task that DMA transmission is complete
-        osThreadFlagsSet(xTxTaskHandle, 0x01);
+//        osThreadFlagsSet(xTxTaskHandle, 0x01);
+        osSemaphoreRelease(xUARTHandle);
     }
+}
+
+void HAL_UART_RxHalfCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART2) {
+		osThreadFlagsSet(xTxTaskHandle, 0x01);
+	}
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+	if (huart->Instance == USART2) {
+		osThreadFlagsSet(xTxTaskHandle, 0x02);
+	}
 }
 
 
