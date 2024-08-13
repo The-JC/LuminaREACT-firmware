@@ -89,10 +89,10 @@ osMessageQueueId_t xUartSendQueueHandle;
 const osMessageQueueAttr_t xUartSendQueue_attributes = {
   .name = "xUartSendQueue"
 };
-/* Definitions for xUartReceiveQueue */
-osMessageQueueId_t xUartReceiveQueueHandle;
-const osMessageQueueAttr_t xUartReceiveQueue_attributes = {
-  .name = "xUartReceiveQueue"
+/* Definitions for xUartRxDMAQueue */
+osMessageQueueId_t xUartRxDMAQueueHandle;
+const osMessageQueueAttr_t xUartRxDMAQueue_attributes = {
+  .name = "xUartRxDMAQueue"
 };
 /* Definitions for xAdcTimer */
 osTimerId_t xAdcTimerHandle;
@@ -247,8 +247,8 @@ int main(void)
   /* creation of xUartSendQueue */
   xUartSendQueueHandle = osMessageQueueNew (4, sizeof(ussp_packet), &xUartSendQueue_attributes);
 
-  /* creation of xUartReceiveQueue */
-  xUartReceiveQueueHandle = osMessageQueueNew (4, sizeof(ussp_packet), &xUartReceiveQueue_attributes);
+  /* creation of xUartRxDMAQueue */
+  xUartRxDMAQueueHandle = osMessageQueueNew (10, sizeof(void *), &xUartRxDMAQueue_attributes);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
