@@ -1,6 +1,11 @@
 from crccheck import crc
 
 def hexToString(array):
+    """Converts a Hex array to an concated hex string
+    :rtype: string
+    :param array: array of the binary data to be converted
+    :return: concated hex string
+    """
     return ", ".join(hex(b) for b in array)
 
 def printHex(array):

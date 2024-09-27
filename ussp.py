@@ -16,6 +16,9 @@ USSP_PACKAGE_OVERHEAD = 5
 MAX_PACKAGAGE_SIZE = USSP_PACKAGE_OVERHEAD + MAX_PAYLOAD_SIZE
 
 class USSP_PayloadType(Enum):
+    STR_ERROR   = 0x01
+    STR_INFO    = 0x02
+    STR_DEBUG   = 0x03
     MESSAGE		= 0x80
 
 @dataclass
@@ -36,21 +39,25 @@ class Packet:
         encoded_data = bytearray()
         encoded_data.append(START_BYTE)
 
+        # Check if length byte needs to be escaped
         if self.length in (START_BYTE, END_BYTE, ESCAPE_BYTE):
-            encoded_data += struct.pack('BB', ESCAPE_BYTE, len(self.payload) ^ 0x20)
+            encoded_data += struct.pack('BB', ESCAPE_BYTE, len(self.payload) ^ 0x20) 
         else:
             encoded_data.append(len(self.payload))
 
+        # Check if payload type byte needs to be escaped
         if payloadType in (START_BYTE, END_BYTE, ESCAPE_BYTE):
             encoded_data += struct.pack('BB', ESCAPE_BYTE, payloadType ^ 0x20)
         else:
             encoded_data.append(payloadType)
 
+        # If the payloads instance is a string encode it for further processing
         if isinstance(self.payload, str):
             payload = self.payload.encode()
         else:
             payload = self.payload
 
+        # Go trough the whole payload to append it to the data package and possible escape bytes
         for byte in payload:
             if byte in (START_BYTE, END_BYTE, ESCAPE_BYTE):
                 encoded_data += struct.pack('BB', ESCAPE_BYTE, byte ^ 0x20)
@@ -93,6 +100,7 @@ class USSP:
         self.isReceiving    = False
         self.isRun          = True
 
+        # Connect to serial port
         print('Trying to connect to: ' + str(serialPort) + ' at ' + str(serialBaud) + ' BAUD.')
         try:
             self.serialConnection = serial.Serial(serialPort, serialBaud, timeout=4)
@@ -121,15 +129,15 @@ class USSP:
     def readSerialStart(self):
         if self.thread == None:
             self.thread = Thread(target=self.backgroundThread)
-            # self.thread.start()
+            self.thread.start()
             # Block till we start receiving values
             i=0
             while self.isReceiving != True:
                 time.sleep(0.1)
-                str = "Hello world %d\n" % (i)
-                bin = Packet(USSP_PayloadType.MESSAGE, str).encode()
-                packet = self.decode_packet(bin)
-                print("Decoded Packet:", packet)
+                # str = "Hello world %d\n" % (i)
+                # bin = Packet(USSP_PayloadType.MESSAGE, str).encode()
+                # packet = self.decode_packet(bin)
+                # print("Decoded Packet:", packet)
                 i+=1
 
     def backgroundThread(self):    # retrieve data
@@ -166,12 +174,22 @@ class USSP:
                         break
 
     def find_start_byte(self, data: bytes) -> int:
+        """Finds the first occurance of the start byte in the data and returns the indice otherwise -1
+        :rtype: int
+        :param: data: datapackage to find start byte
+        :return: start byte indice or -1 if data doesn't contain start byte
+        """
         try:
             return data.index(START_BYTE)
         except ValueError:
             return -1
         
     def find_end_byte(self, data: bytes) -> int:
+        """Finds the first occurance of the end byte in the data and returns the indice otherwise -1
+        :rtype: int
+        :param: data: datapackage to find end byte
+        :return: end byte indice or -1 if data doesn't contain end byte
+        """
         try:
             return data.index(END_BYTE)
         except ValueError:
@@ -191,13 +209,13 @@ class USSP:
         if len(encoded_data) < 4:
             raise ValueError("Encoded data is too short.")
         
+        # Try to find the start byte otherwise throw an error
         start_index = self.find_start_byte(encoded_data)
-    
         if start_index == -1:
             raise ValueError("Start byte not found in the data.")
         
+        # Try to find the start byte otherwise throw an error
         end_index = self.find_end_byte(encoded_data)
-    
         if end_index == -1:
             raise ValueError("End byte not found in the data.")
     
@@ -207,18 +225,20 @@ class USSP:
         if len(encoded_data) < i + 2:
             raise ValueError("Data length too short after start byte.")
         
-
+        # Validate start byte
         start_byte = encoded_data[i]
         if start_byte != START_BYTE:
             raise ValueError("Invalid start byte.")
         i += 1
 
+        # Decode the length byte
         length = encoded_data[i]
         if length == ESCAPE_BYTE:
             i+=1
             length = encoded_data[i] ^ 0x20
         i+=1
         
+        # Decode the payload type byte
         payloadType = encoded_data[i]
         if payloadType == ESCAPE_BYTE:
             i+=1
@@ -228,7 +248,7 @@ class USSP:
         escape = False
         decoded_data = bytearray()
 
-        # i = 3
+        # Decode the payload
         while i < end_index - 1:
             byte = encoded_data[i]
             if escape:
@@ -240,6 +260,7 @@ class USSP:
                 decoded_data.append(byte)
             i += 1
 
+        # Validate decoded data length matches advertised packet length
         if len(decoded_data) != length:
             raise ValueError("Decoded length doesn't match packet length.")
 
@@ -253,7 +274,8 @@ class USSP:
         if end_byte != END_BYTE:
             raise ValueError("Invalid end byte.")
 
-        empty_bytes = (4 - (length+1) % 4) % 4
+        # Calculate CRC32 and compare to packet CRC
+        empty_bytes = (4 - (length+1) % 4) % 4 # Byte padding for crc
         payloadCRC = bytearray(payloadType.to_bytes() + decoded_data) + bytearray(empty_bytes)
         crc32 = process_queue(payloadCRC)
         if checksum != (crc32) & 0xFF:
